@@ -1,0 +1,103 @@
+version: '3.3'
+services:
+  reverse-proxy:
+    # https://doc.traefik.io/traefik/providers/docker/#docker-swarm-mode
+    # The official v2 Traefik docker image
+    image: traefik:v2.9
+    deploy:
+      labels:
+        traefik.enable: "true"
+        # user/passwd can be formed with htpasswd util
+        # echo $(htpasswd -nB user) | sed -e s/\\$/\\$\\$/g
+        traefik.http.middlewares.router-auth.basicauth.users: user:$$2y$$05$$wt3.xNf/8im.4sPPoPNqN.kgVZoHH9mE.p00VWYZONtK90qwIMJD6
+
+        # create router with a name "dashboard"
+        traefik.http.routers.dashboard.rule: Host(`dashboard.legenda905.ru`)
+        # traefik.http.routers.dashboard.entrypoints: websecure
+        traefik.http.routers.dashboard.tls: "true"
+        traefik.http.routers.dashboard.tls.certResolver: le
+        traefik.http.routers.dashboard.service: api@internal
+        # Docker Swarm does not provide any port detection information to Traefik
+        # we must specify port
+        traefik.http.services.api.loadbalancer.server.port: "8080"
+        # apply router-auth middleware
+        traefik.http.routers.dashboard.middlewares: router-auth@docker
+    # Enables the web UI and tells Traefik to listen to docker      
+    command:
+      - "--log.level=DEBUG"
+      - "--api.insecure=false"
+      - "--api.dashboard=true"
+      - "--api.debug=true"
+      - "--providers.docker=true"
+      - "--providers.docker.swarmMode=true"
+      # - "--providers.docker.endpoint=unix:///var/run/docker.sock" # it's a default value
+
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.le.acme.caserver=https://acme-v02.api.letsencrypt.org/directory"
+      # - "--certificatesresolvers.le.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory"
+      - "--certificatesresolvers.le.acme.email=karasev.dmitry@gmail.com"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+    ports:
+      # The HTTP port
+      - "80:80"
+      - "443:443"
+      # The Web UI (enabled by --api.insecure=true)
+      # - "8080:8080"
+    volumes:
+      #folder for acme.json file
+      - "./letsencrypt:/letsencrypt"
+      # So that Traefik can listen to the Docker events
+      - /var/run/docker.sock:/var/run/docker.sock
+  db:
+    image: mysql:5.7
+    volumes:
+      - db:/var/lib/mysql
+    restart: always
+    environment:
+      MYSQL_RANDOM_ROOT_PASSWORD: '1'
+      MYSQL_DATABASE: <db_name>
+      MYSQL_USER: <dbadmin_user>
+      MYSQL_PASSWORD: <dbadmin_passwd>
+
+  wordpress:
+    depends_on:
+      - db
+    image: wordpress:php7.4
+    # ports:
+    #   - "80:80"
+    # add labels to connect with traefik
+    deploy:
+      labels:
+        traefik.enable: "true"
+        # Docker Swarm does not provide any port detection information to Traefik
+        # we must specify port
+        traefik.http.services.wordpress.loadbalancer.server.port: 80
+        # we will redirect http traffic to https
+        traefik.http.middlewares.http-redirect.redirectscheme.scheme: https
+
+        traefik.http.routers.wp-https.rule: Host(`legenda905.ru`, `www.legenda905.ru`)
+        traefik.http.routers.wp-https.entrypoints: websecure
+        traefik.http.routers.wp-https.tls.certresolver: le
+        
+        traefik.http.routers.wp.rule: Host(`legenda905.ru`, `www.legenda905.ru`)
+        traefik.http.routers.wp.entrypoints: web
+        traefik.http.routers.wp.middlewares: http-redirect@docker
+    restart: always
+    environment:
+      WORDPRESS_DB_HOST: db # db service name
+      WORDPRESS_DB_USER: <dbadmin_user>
+      WORDPRESS_DB_PASSWORD: <dbadmin_passwd>
+      WORDPRESS_DB_NAME: <db_name>
+    volumes:
+      - wordpress:/var/www/html
+volumes:
+  wordpress:
+    external: true
+  db:
+    external: true
+
